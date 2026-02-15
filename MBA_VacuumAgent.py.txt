@@ -1,0 +1,175 @@
+"""
+Foundations of AI - Real world Activity! 
+
+Scenario: Smart Vacuum Robot in a 2D room (grid).
+Agent type implemented: MODEL-BASED AGENT.
+
+Goal: Clean all dirty tiles with minimum steps ("energy").
+The agent only senses the CURRENT tile (dirty/clean) and the room boundaries.
+It maintains an internal map (model) of what it has seen so far.
+
+Your task (Optimization):
+1) Improve the agent’s decision policy to reduce steps/energy.
+2) Keep the same environment + sensing limits.
+3) Compare baseline vs your optimized agent over multiple random rooms.
+
+Hint ideas:
+- Systematic exploration instead of random moves when stuck.
+- Remember “frontier” (unknown tiles adjacent to known tiles) and navigate there.
+- If you have seen any dirty tile, plan a shortest path to it (BFS).
+"""
+
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Dict, Tuple
+import random
+import statistics
+
+Pos = Tuple[int, int]  # (row, col)
+
+@dataclass
+class Room:
+    rows: int
+    cols: int
+    dirt_prob: float = 0.25
+    seed: int = 0
+
+    def __post_init__(self):
+        rnd = random.Random(self.seed)
+        # True = dirty, False = clean
+        self.grid = [[(rnd.random() < self.dirt_prob) for _ in range(self.cols)] for _ in range(self.rows)]
+
+    def is_dirty(self, p: Pos) -> bool:
+        r, c = p
+        return self.grid[r][c]
+
+    def clean(self, p: Pos) -> None:
+        r, c = p
+        self.grid[r][c] = False
+
+    def dirt_count(self) -> int:
+        return sum(1 for r in range(self.rows) for c in range(self.cols) if self.grid[r][c])
+
+@dataclass
+class Percept:
+    pos: Pos
+    dirty_here: bool
+    # Boundary sensors (agent knows if a move would hit a wall)
+    wall_up: bool
+    wall_down: bool
+    wall_left: bool
+    wall_right: bool
+
+class ModelBasedReflexVacuumAgent:
+    """
+    Baseline model-based reflex:
+    - If current tile is dirty -> SUCK
+    - Else prefer moving to any UNVISITED neighbor
+    - Else move randomly among valid moves
+
+    Internal model:
+    - visited set
+    - knowledge map: unknown / clean
+    """
+    def __init__(self, seed: int = 0):
+        self.rnd = random.Random(seed)
+        self.visited = set()
+        self.knowledge: Dict[Pos, str] = {}
+
+    def update_model(self, percept: Percept) -> None:
+        self.visited.add(percept.pos)
+        self.knowledge[percept.pos] = "CLEAN" if not percept.dirty_here else "UNKNOWN"
+
+    def choose_action(self, percept: Percept) -> str:
+        self.update_model(percept)
+
+        if percept.dirty_here:
+            return "SUCK"
+
+        r, c = percept.pos
+        neighbors = []
+        if not percept.wall_up:    neighbors.append((r - 1, c, "UP"))
+        if not percept.wall_down:  neighbors.append((r + 1, c, "DOWN"))
+        if not percept.wall_left:  neighbors.append((r, c - 1, "LEFT"))
+        if not percept.wall_right: neighbors.append((r, c + 1, "RIGHT"))
+
+        unvisited_moves = [a for (nr, nc, a) in neighbors if (nr, nc) not in self.visited]
+        if unvisited_moves:
+            return self.rnd.choice(unvisited_moves)
+
+        valid_moves = [a for (_, _, a) in neighbors]
+        return self.rnd.choice(valid_moves) if valid_moves else "NOOP"
+
+def get_percept(room: Room, pos: Pos) -> Percept:
+    r, c = pos
+    return Percept(
+        pos=pos,
+        dirty_here=room.is_dirty(pos),
+        wall_up=(r == 0),
+        wall_down=(r == room.rows - 1),
+        wall_left=(c == 0),
+        wall_right=(c == room.cols - 1),
+    )
+
+def step(room: Room, pos: Pos, action: str) -> Pos:
+    r, c = pos
+    if action == "SUCK":
+        room.clean(pos)
+        return pos
+    if action == "UP":    return (r - 1, c) if r > 0 else pos
+    if action == "DOWN":  return (r + 1, c) if r < room.rows - 1 else pos
+    if action == "LEFT":  return (r, c - 1) if c > 0 else pos
+    if action == "RIGHT": return (r, c + 1) if c < room.cols - 1 else pos
+    return pos
+
+def run_episode(
+    rows: int = 6,
+    cols: int = 6,
+    dirt_prob: float = 0.25,
+    room_seed: int = 1,
+    agent_seed: int = 1,
+    max_steps: int = 500,
+    start: Pos = (0, 0),
+) -> dict:
+    room = Room(rows, cols, dirt_prob, seed=room_seed)
+    agent = ModelBasedReflexVacuumAgent(seed=agent_seed)
+
+    pos = start
+    initial_dirt = room.dirt_count()
+    steps_taken = 0
+
+    while steps_taken < max_steps and room.dirt_count() > 0:
+        percept = get_percept(room, pos)
+        action = agent.choose_action(percept)
+        pos = step(room, pos, action)
+        steps_taken += 1
+
+    return {
+        "rows": rows,
+        "cols": cols,
+        "dirt_prob": dirt_prob,
+        "room_seed": room_seed,
+        "agent_seed": agent_seed,
+        "initial_dirt": initial_dirt,
+        "steps_taken": steps_taken,
+        "dirt_remaining": room.dirt_count(),
+        "cleaned_all": room.dirt_count() == 0,
+    }
+
+def benchmark(trials: int = 30, rows: int = 8, cols: int = 8, dirt_prob: float = 0.30) -> None:
+    results = []
+    for t in range(trials):
+        res = run_episode(rows, cols, dirt_prob, room_seed=1000 + t, agent_seed=42, max_steps=2000)
+        results.append(res)
+
+    steps = [r["steps_taken"] for r in results]
+    success = sum(1 for r in results if r["cleaned_all"])
+
+    print("=== Baseline Model-Based Reflex Agent ===")
+    print(f"Trials: {trials}, Grid: {rows}x{cols}, DirtProb: {dirt_prob}")
+    print(f"Success (cleaned all within max_steps): {success}/{trials}")
+    print(f"Avg steps: {statistics.mean(steps):.1f}   Median steps: {statistics.median(steps):.1f}   Min/Max: {min(steps)}/{max(steps)}")
+    print("\nYour optimization target: reduce Avg steps and/or increase success rate.")
+
+if __name__ == "__main__":
+    benchmark()
